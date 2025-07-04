@@ -30,11 +30,31 @@ jobs:
               echo "Using existing node_modules"
             fi
             
-            # Verify Chrome is available
-            echo "Checking Chrome installation..."
-            which chromium
-            chromium --version
-            echo "Chrome verification complete"
+            # Find Chrome executable path
+            echo "Finding Chrome executable..."
+            CHROME_PATH=$(which chromium-browser || which chromium || which google-chrome || echo "not-found")
+            echo "Chrome executable found at: $CHROME_PATH"
             
-            # Run the scraper
-            NODE_OPTIONS="--max-old-space-size=4096" PUPPETEER_EXECUTABLE_PATH="/usr/bin/chromium" node router.js --payload '${{ toJson(github.event.client_payload) }}'
+            # List available browsers
+            echo "Available browsers:"
+            find / -name "chromium*" -type f -executable 2>/dev/null || echo "No chromium found"
+            find / -name "chrome*" -type f -executable 2>/dev/null || echo "No chrome found"
+            
+            # Modify the path based on what we found
+            if [ "$CHROME_PATH" = "not-found" ]; then
+              # Try the default path in the puppeteer image
+              CHROME_PATH="/usr/bin/google-chrome-stable"
+              echo "Using default path: $CHROME_PATH"
+            fi
+            
+            # Verify Chrome executable exists
+            if [ -f "$CHROME_PATH" ]; then
+              echo "Chrome executable verified at: $CHROME_PATH"
+              $CHROME_PATH --version
+            else
+              echo "ERROR: Chrome executable not found at: $CHROME_PATH"
+              exit 1
+            fi
+            
+            # Run the scraper with the correct Chrome path
+            NODE_OPTIONS="--max-old-space-size=4096" PUPPETEER_EXECUTABLE_PATH="$CHROME_PATH" node router.js --payload '${{ toJson(github.event.client_payload) }}'
