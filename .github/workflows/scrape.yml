@@ -9,48 +9,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     
-    # Use a container with Node.js and Puppeteer pre-installed
-    container:
-      image: ghcr.io/puppeteer/puppeteer:20.9.0
-      options: --shm-size=2gb
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Simpler caching strategy with fewer variations in keys
-      - name: Cache dependencies
-        uses: actions/cache@v3
-        id: cache
+      - name: Run in Docker container
+        uses: addnab/docker-run-action@v3
         with:
-          path: |
-            **/node_modules
-            ~/.npm
-            ~/.cache/puppeteer
-          # Use a simpler key based only on package-lock.json
-          key: ${{ runner.os }}-deps-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-deps-
-
-      # Skip installation if cache hit
-      - name: Install dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          echo "Cache miss - installing dependencies..."
-          npm ci
-          echo "Dependencies installed successfully"
-
-      # Skip Puppeteer setup since we're using a pre-installed container
-      # Just verify Chrome is available
-      - name: Verify Chrome
-        run: |
-          echo "Checking Chrome installation..."
-          which chromium
-          chromium --version
-          echo "Chrome verification complete"
-
-      - name: Run scraper
-        run: node router.js --payload '${{ toJson(github.event.client_payload) }}'
-        env:
-          NODE_OPTIONS: "--max-old-space-size=4096"
-          PUPPETEER_EXECUTABLE_PATH: "/usr/bin/chromium"
+          image: ghcr.io/puppeteer/puppeteer:20.9.0
+          options: --shm-size=2gb -v ${{ github.workspace }}:/app
+          run: |
+            cd /app
+            
+            # Install dependencies if node_modules doesn't exist
+            if [ ! -d "node_modules" ]; then
+              echo "Installing dependencies..."
+              npm ci
+              echo "Dependencies installed successfully"
+            else
+              echo "Using existing node_modules"
+            fi
+            
+            # Verify Chrome is available
+            echo "Checking Chrome installation..."
+            which chromium
+            chromium --version
+            echo "Chrome verification complete"
+            
+            # Run the scraper
+            NODE_OPTIONS="--max-old-space-size=4096" PUPPETEER_EXECUTABLE_PATH="/usr/bin/chromium" node router.js --payload '${{ toJson(github.event.client_payload) }}'
