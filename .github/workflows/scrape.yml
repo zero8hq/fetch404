@@ -1,0 +1,63 @@
+name: Twitter Scraper
+
+on:
+  repository_dispatch:
+    types: [start-scrape]
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      # Enhanced cache for node_modules with more specific keys
+      - name: Cache node modules
+        uses: actions/cache@v3
+        id: node-cache
+        with:
+          path: |
+            **/node_modules
+            ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}-
+            ${{ runner.os }}-node-
+
+      # Cache Puppeteer binaries to speed up builds
+      - name: Cache Puppeteer
+        uses: actions/cache@v3
+        id: puppeteer-cache
+        with:
+          path: |
+            ~/.cache/puppeteer
+            ~/.cache/ms-playwright
+          key: ${{ runner.os }}-puppeteer-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-puppeteer-
+
+      # Only install dependencies if cache miss
+      - name: Install dependencies
+        if: steps.node-cache.outputs.cache-hit != 'true'
+        run: npm ci
+
+      # Ensure Puppeteer is properly set up
+      - name: Setup Puppeteer
+        if: steps.puppeteer-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "Setting up Puppeteer..."
+          npx puppeteer browsers install chrome
+          echo "Puppeteer setup complete"
+
+      - name: Run scraper
+        run: node router.js --payload '${{ toJson(github.event.client_payload) }}'
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"

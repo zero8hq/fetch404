@@ -1,0 +1,504 @@
+/**
+ * Twitter Search Scraper for fetch404
+ * Scrapes search results from Nitter instances with fallback support from utils file
+ * making sure top level bot detection is bypassed including cloudflare protection
+ */
+
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const fs = require('fs-extra');
+const path = require('path');
+const axios = require('axios');
+const { getFallbackNitterUrl } = require('../../utils/getFallbackNitterUrl');
+
+// Add stealth plugin to bypass detection
+puppeteer.use(StealthPlugin());
+
+/**
+ * Extract tweet data from HTML elements
+ * @param {Object} page - Puppeteer page object
+ * @param {Set<string>} seenTweetIds - Set of already seen tweet IDs to avoid duplicates
+ * @returns {Promise<Array>} - Array of structured tweet data
+ */
+async function extractTweetData(page, seenTweetIds = new Set()) {
+  return await page.evaluate((alreadySeenIds) => {
+    const tweets = [];
+    const tweetElements = document.querySelectorAll('.timeline-item');
+    const seenIds = new Set(alreadySeenIds);
+    
+    tweetElements.forEach(tweetElem => {
+      try {
+        // Skip "Load more" elements that appear as timeline items
+        if (tweetElem.querySelector('.show-more')) return;
+        
+        // Get tweet link and extract ID
+        const tweetLinkElem = tweetElem.querySelector('.tweet-link');
+        const tweetUrl = tweetLinkElem ? tweetLinkElem.getAttribute('href') : null;
+        
+        // Skip tweets without a valid URL
+        if (!tweetUrl) return;
+        
+        const tweetId = tweetUrl ? tweetUrl.split('/status/')[1]?.split('#')[0] : null;
+        
+        // Skip tweets without a valid ID
+        if (!tweetId) return;
+        
+        // Skip tweets we've already seen
+        if (seenIds.has(tweetId)) return;
+        
+        // Mark this tweet as seen
+        seenIds.add(tweetId);
+        
+        // Get author info
+        const fullnameElem = tweetElem.querySelector('.fullname');
+        const usernameElem = tweetElem.querySelector('.username');
+        
+        // Skip tweets without author info
+        if (!fullnameElem || !usernameElem) return;
+        
+        // Get retweet info if present
+        const retweetHeaderElem = tweetElem.querySelector('.retweet-header');
+        const isRetweet = !!retweetHeaderElem;
+        const retweetedBy = isRetweet ? 
+          retweetHeaderElem.textContent.replace('retweeted', '').trim() : null;
+          
+        // Get tweet content
+        const contentElem = tweetElem.querySelector('.tweet-content');
+        const content = contentElem ? contentElem.textContent.trim() : null;
+        
+        // Get tweet date
+        const dateElem = tweetElem.querySelector('.tweet-date a');
+        const dateText = dateElem ? dateElem.textContent.trim() : null;
+        const dateTitle = dateElem ? dateElem.getAttribute('title') : null;
+        
+        // Get tweet stats
+        const commentElem = tweetElem.querySelector('.tweet-stat:nth-child(1)');
+        const retweetElem = tweetElem.querySelector('.tweet-stat:nth-child(2)');
+        const quoteElem = tweetElem.querySelector('.tweet-stat:nth-child(3)');
+        const likeElem = tweetElem.querySelector('.tweet-stat:nth-child(4)');
+        
+        const commentCount = commentElem ? commentElem.textContent.trim() : '0';
+        const retweetCount = retweetElem ? retweetElem.textContent.trim() : '0';
+        const quoteCount = quoteElem ? quoteElem.textContent.trim() : '0';
+        const likeCount = likeElem ? likeElem.textContent.trim() : '0';
+        
+        // Get media attachments
+        const mediaElements = tweetElem.querySelectorAll('.attachments .attachment');
+        const media = Array.from(mediaElements).map(mediaElem => {
+          const isVideo = mediaElem.classList.contains('video-container');
+          let url = null;
+          
+          if (isVideo) {
+            const img = mediaElem.querySelector('img');
+            url = img ? img.getAttribute('src') : null;
+            return { type: 'video', url };
+          } else {
+            const img = mediaElem.querySelector('img');
+            url = img ? img.getAttribute('src') : null;
+            return { type: 'image', url };
+          }
+        });
+        
+        // Get quoted tweet if present
+        let quotedTweet = null;
+        const quotedElem = tweetElem.querySelector('.quote-big');
+        
+        if (quotedElem) {
+          const quoteLink = quotedElem.querySelector('.quote-link');
+          const quoteUrl = quoteLink ? quoteLink.getAttribute('href') : null;
+          const quoteId = quoteUrl ? quoteUrl.split('/status/')[1]?.split('#')[0] : null;
+          
+          const quoteFullnameElem = quotedElem.querySelector('.fullname');
+          const quoteUsernameElem = quotedElem.querySelector('.username');
+          const quoteContentElem = quotedElem.querySelector('.quote-text');
+          
+          quotedTweet = {
+            id: quoteId,
+            url: quoteUrl ? `https://x.com${quoteUrl}` : null,
+            username: quoteUsernameElem ? quoteUsernameElem.textContent.trim() : null,
+            fullname: quoteFullnameElem ? quoteFullnameElem.textContent.trim() : null,
+            content: quoteContentElem ? quoteContentElem.textContent.trim() : null,
+          };
+        }
+        
+        // Create tweet object with all extracted data
+        const tweet = {
+          id: tweetId,
+          url: `https://x.com${tweetUrl}`,
+          username: usernameElem ? usernameElem.textContent.trim() : null,
+          fullname: fullnameElem ? fullnameElem.textContent.trim() : null,
+          verified: !!fullnameElem?.querySelector('.verified-icon'),
+          isRetweet,
+          retweetedBy,
+          content,
+          date: {
+            text: dateText,
+            full: dateTitle
+          },
+          stats: {
+            comments: commentCount,
+            retweets: retweetCount,
+            quotes: quoteCount,
+            likes: likeCount
+          },
+          media: media.length > 0 ? media : null,
+          quotedTweet: quotedTweet
+        };
+        
+        tweets.push(tweet);
+      } catch (err) {
+        // Silently ignore errors
+      }
+    });
+    
+    return tweets;
+  }, Array.from(seenTweetIds));
+}
+
+/**
+ * Gets the content of a "Show more" button if available
+ * @param {Object} page - Puppeteer page object
+ * @returns {Promise<{exists: boolean, selector: string|null, isBottom: boolean}>} - Show more button information
+ */
+async function getShowMoreButton(page) {
+  return await page.evaluate(() => {
+    // First look for the show more button at the bottom
+    const bottomShowMore = document.querySelector('.show-more:not(.timeline-item)');
+    if (bottomShowMore) {
+      return { exists: true, selector: '.show-more:not(.timeline-item)', isBottom: true };
+    }
+    
+    // Alternative show more buttons (may exist in different Nitter instances)
+    const timelineShowMore = document.querySelector('.timeline > .show-more');
+    if (timelineShowMore) {
+      return { exists: true, selector: '.timeline > .show-more', isBottom: true };
+    }
+    
+    const moreResults = document.querySelector('.more-results');
+    if (moreResults) {
+      return { exists: true, selector: '.more-results', isBottom: true };
+    }
+    
+    // No show more button found
+    return { exists: false, selector: null, isBottom: false };
+  });
+}
+
+/**
+ * Click "Show more" button if available and wait for more content to load
+ * @param {Object} page - Puppeteer page object
+ * @returns {Promise<boolean>} - Whether a "Show more" button was found and clicked
+ */
+async function clickShowMoreButton(page) {
+  try {
+    // Wait for any potential "show more" button to appear
+    await page.waitForTimeout(1000);
+    
+    // Check for show more button
+    const showMoreInfo = await getShowMoreButton(page);
+    
+    if (showMoreInfo.exists && showMoreInfo.selector) {
+      // Get the current number of tweets for comparison later
+      const beforeCount = await page.evaluate(() => 
+        document.querySelectorAll('.timeline-item:not(.show-more)').length
+      );
+      
+      // Click the button using different methods to ensure it works
+      try {
+        // Method 1: Direct click
+        await page.click(showMoreInfo.selector);
+      } catch (e) {
+        // Method 2: Evaluate click
+        await page.evaluate((selector) => {
+          const element = document.querySelector(selector);
+          if (element) element.click();
+        }, showMoreInfo.selector);
+      }
+      
+      // Wait for network activity to settle and DOM changes to occur
+      await page.waitForTimeout(1000);
+      await Promise.race([
+        page.waitForNetworkIdle({ idleTime: 1000 }),
+        page.waitForTimeout(3000)
+      ]);
+      
+      // Wait a bit more for content to render
+      await page.waitForTimeout(2000);
+      
+      // Check if we got more tweets
+      const afterCount = await page.evaluate(() => 
+        document.querySelectorAll('.timeline-item:not(.show-more)').length
+      );
+      
+      // If we got new tweets, consider it a success
+      return afterCount > beforeCount;
+    }
+    
+    return false;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Scroll down the page to load more tweets and extract data incrementally
+ * @param {Object} page - Puppeteer page object
+ * @param {number} maxAttempts - Maximum number of attempts to load more tweets
+ * @param {number} desiredTweetCount - Target number of tweets to collect
+ * @returns {Promise<{tweetCount: number, tweets: Array}>} - Count of timeline items found and extracted tweets
+ */
+async function loadMoreTweetsAndExtract(page, maxAttempts = 10, desiredTweetCount = 100) {
+  let currentItemCount = 0;
+  let totalNewTweets = 0;
+  let consecutiveFailures = 0;
+  const maxConsecutiveFailures = 3;
+  let allExtractedTweets = [];
+  let seenTweetIds = new Set();
+  
+  // First, get initial tweet count
+  currentItemCount = await page.evaluate(() => 
+    document.querySelectorAll('.timeline-item:not(.show-more)').length
+  );
+  
+  // Extract initial tweets
+  const initialTweets = await extractTweetData(page, seenTweetIds);
+  initialTweets.forEach(tweet => {
+    seenTweetIds.add(tweet.id);
+    allExtractedTweets.push(tweet);
+  });
+  
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // Try clicking "Show more" button first
+    const clickSuccess = await clickShowMoreButton(page);
+    
+    // If button click didn't work or wasn't available, try scrolling
+    if (!clickSuccess) {
+      // Scroll to bottom
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+      });
+      
+      // Wait for potential new content to load
+      await page.waitForTimeout(2000);
+    }
+    
+    // Extract new tweets after loading more content
+    const newTweets = await extractTweetData(page, seenTweetIds);
+    
+    // Add new tweets to our collection and update seen IDs
+    newTweets.forEach(tweet => {
+      seenTweetIds.add(tweet.id);
+      allExtractedTweets.push(tweet);
+    });
+    
+    // Check if we got more tweets after this attempt
+    const newItemCount = await page.evaluate(() => 
+      document.querySelectorAll('.timeline-item:not(.show-more)').length
+    );
+    
+    const newTweetsThisAttempt = newItemCount - currentItemCount;
+    
+    if (newTweetsThisAttempt > 0 || newTweets.length > 0) {
+      // Reset the failure counter if we got new tweets
+      consecutiveFailures = 0;
+      totalNewTweets += newTweetsThisAttempt;
+      currentItemCount = newItemCount;
+    } else {
+      // Increment failure counter if we didn't get new tweets
+      consecutiveFailures++;
+      
+      // If we've had several attempts with no new tweets, stop trying
+      if (consecutiveFailures >= maxConsecutiveFailures) {
+        break;
+      }
+    }
+    
+    // Break out if we've collected enough tweets
+    if (allExtractedTweets.length >= desiredTweetCount) {
+      break;
+    }
+    
+    // Take a small break between attempts to avoid hitting rate limits
+    await page.waitForTimeout(1000);
+  }
+  
+  return {
+    tweetCount: currentItemCount,
+    tweets: allExtractedTweets
+  };
+}
+
+/**
+ * Scrapes Twitter search results using Nitter instances
+ * @param {Object} params - Search parameters
+ * @param {string} params.query - Search query term
+ * @param {number} params.limit - Maximum number of tweets to fetch (optional)
+ * @param {string} params.type - Type of search ('tweets' or 'users')
+ * @param {string} params.callback_url - URL to send results to (optional)
+ * @returns {Promise<Object>} - Search results with metadata
+ */
+async function searchTwitter(params) {
+  const { query, limit = 20, type = 'tweets', callback_url } = params;
+  
+  if (!query) {
+    throw new Error('Search query is required');
+  }
+  
+  // Determine maximum attempts based on desired limit
+  const maxAttempts = Math.min(Math.max(Math.ceil(limit / 5), 5), 20);
+  
+  let browser = null;
+  let attempts = 0;
+  const maxNitterAttempts = 6; // Number of Nitter instances
+  let success = false;
+  let tweets = [];
+  let currentError = null;
+  let metadata = {};
+  
+  // Encode the search query properly for URL
+  const encodedQuery = encodeURIComponent(query);
+  
+  // Create timestamp for metadata
+  const timestamp = Date.now();
+  
+  while (attempts < maxNitterAttempts && !success) {
+    const nitterBaseUrl = getFallbackNitterUrl(attempts > 0);
+    const searchUrl = `${nitterBaseUrl}/search?f=${type}&q=${encodedQuery}`;
+    
+    try {
+      // Launch browser with stealth mode and advanced options
+      browser = await puppeteer.launch({
+        headless: true, // 'new' for newer versions of Puppeteer
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu',
+          '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+        ]
+      });
+
+      const page = await browser.newPage();
+      
+      // Set extra headers to look more like a real browser
+      await page.setExtraHTTPHeaders({
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br'
+      });
+      
+      // Randomize viewport size slightly to avoid fingerprinting
+      const width = 1280 + Math.floor(Math.random() * 100);
+      const height = 800 + Math.floor(Math.random() * 100);
+      await page.setViewport({ width, height });
+
+      // Set cookies to appear more like a regular user
+      await page.setCookie({
+        name: 'nitter_prefs',
+        value: 'minimal=0&infinite=1',
+        domain: new URL(nitterBaseUrl).hostname
+      });
+      
+      // Enable request interception for debugging
+      await page.setRequestInterception(true);
+      page.on('request', request => {
+        request.continue();
+      });
+      
+      // Suppress console messages
+      page.on('console', () => {});
+      
+      // Set a generous timeout to deal with Cloudflare delays
+      await page.setDefaultNavigationTimeout(30000);
+      
+      // Navigate with a wait strategy that ensures the content is loaded
+      await page.goto(searchUrl, {
+        waitUntil: ['domcontentloaded', 'networkidle2'],
+      });
+
+      // Wait for tweets to load
+      await page.waitForSelector('.timeline-item, .error-panel', { timeout: 15000 })
+        .catch(() => { throw new Error('Content selector not found'); });
+      
+      // Check if we hit an error page
+      const errorElement = await page.$('.error-panel');
+      if (errorElement) {
+        const errorText = await page.evaluate(el => el.textContent, errorElement);
+        throw new Error(`Nitter error: ${errorText.trim()}`);
+      }
+      
+      // Load more tweets with pagination attempts, extracting incrementally
+      const result = await loadMoreTweetsAndExtract(page, maxAttempts, limit);
+      
+      tweets = result.tweets;
+      
+      // Limit the number of tweets if necessary
+      if (limit > 0 && tweets.length > limit) {
+        tweets = tweets.slice(0, limit);
+      }
+      
+      if (tweets && tweets.length > 0) {
+        // Create metadata for search results
+        metadata = {
+          query,
+          timestamp,
+          type,
+          nitterInstance: nitterBaseUrl,
+          count: tweets.length,
+          limit,
+          totalFound: result.tweetCount,
+          paginationAttempts: maxAttempts
+        };
+        
+        // Success! We have the data
+        success = true;
+        
+        // If callback_url is provided directly to this function, send the results
+        if (callback_url) {
+          await axios.post(callback_url, {
+            success: true,
+            type,
+            params,
+            result: { metadata, tweets }
+          });
+        }
+      } else {
+        throw new Error('No valid tweets found in search results');
+      }
+      
+    } catch (error) {
+      currentError = error;
+      attempts++;
+      
+      // If this is the last attempt and we have a callback_url, send the error
+      if (attempts >= maxNitterAttempts && callback_url) {
+        await axios.post(callback_url, {
+          success: false,
+          type,
+          params,
+          error: {
+            message: error.message,
+            stack: error.stack
+          }
+        }).catch(() => {
+          // Silently ignore callback errors to prevent cascading failures
+        });
+      }
+    } finally {
+      if (browser) {
+        await browser.close();
+      }
+    }
+  }
+  
+  if (!success) {
+    throw new Error(`Failed to scrape after ${maxNitterAttempts} attempts. Last error: ${currentError?.message || 'Unknown error'}`);
+  }
+  
+  return { metadata, tweets };
+}
+
+module.exports = { searchTwitter };

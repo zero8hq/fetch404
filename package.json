@@ -1,0 +1,26 @@
+{
+  "name": "fetch404",
+  "version": "1.0.0",
+  "description": "Twitter scraper-as-a-function using GitHub Actions",
+  "main": "router.js",
+  "scripts": {
+    "start": "node router.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "twitter",
+    "scraper",
+    "nitter",
+    "github-actions"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "puppeteer": "^21.3.6",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "axios": "^1.5.1",
+    "fs-extra": "^11.1.1",
+    "yargs": "^17.7.2"
+  }
+}
