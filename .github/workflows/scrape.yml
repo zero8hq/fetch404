@@ -8,56 +8,49 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    
+    # Use a container with Node.js and Puppeteer pre-installed
+    container:
+      image: ghcr.io/puppeteer/puppeteer:20.9.0
+      options: --shm-size=2gb
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-          cache: 'npm'
-
-      # Enhanced cache for node_modules with more specific keys
-      - name: Cache node modules
+      # Simpler caching strategy with fewer variations in keys
+      - name: Cache dependencies
         uses: actions/cache@v3
-        id: node-cache
+        id: cache
         with:
           path: |
             **/node_modules
             ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('**/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}-
-            ${{ runner.os }}-node-
-
-      # Cache Puppeteer binaries to speed up builds
-      - name: Cache Puppeteer
-        uses: actions/cache@v3
-        id: puppeteer-cache
-        with:
-          path: |
             ~/.cache/puppeteer
-            ~/.cache/ms-playwright
-          key: ${{ runner.os }}-puppeteer-${{ hashFiles('**/package-lock.json') }}
+          # Use a simpler key based only on package-lock.json
+          key: ${{ runner.os }}-deps-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-puppeteer-
+            ${{ runner.os }}-deps-
 
-      # Only install dependencies if cache miss
+      # Skip installation if cache hit
       - name: Install dependencies
-        if: steps.node-cache.outputs.cache-hit != 'true'
-        run: npm ci
-
-      # Ensure Puppeteer is properly set up
-      - name: Setup Puppeteer
-        if: steps.puppeteer-cache.outputs.cache-hit != 'true'
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          echo "Setting up Puppeteer..."
-          npx puppeteer browsers install chrome
-          echo "Puppeteer setup complete"
+          echo "Cache miss - installing dependencies..."
+          npm ci
+          echo "Dependencies installed successfully"
+
+      # Skip Puppeteer setup since we're using a pre-installed container
+      # Just verify Chrome is available
+      - name: Verify Chrome
+        run: |
+          echo "Checking Chrome installation..."
+          which chromium
+          chromium --version
+          echo "Chrome verification complete"
 
       - name: Run scraper
         run: node router.js --payload '${{ toJson(github.event.client_payload) }}'
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
+          PUPPETEER_EXECUTABLE_PATH: "/usr/bin/chromium"
