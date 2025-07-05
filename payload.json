@@ -1,8 +1,0 @@
-{
-  "type": "search_tweets",
-  "params": {
-    "query": "soham parekh",
-    "limit": 15
-  },
-  "callback_url": "http://localhost:3000/api/fetch404/test-webhook"
-} 

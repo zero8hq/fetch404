@@ -1,6 +1,6 @@
 /**
- * Twitter Search Scraper for fetch404
- * Scrapes search results from Nitter instances with fallback support from utils file
+ * Twitter User Tweets Scraper for fetch404
+ * Scrapes user tweets from Nitter instances with fallback support from utils file
  * making sure top level bot detection is bypassed including cloudflare protection
  */
 
@@ -329,19 +329,111 @@ async function loadMoreTweetsAndExtract(page, maxAttempts = 10, desiredTweetCoun
 }
 
 /**
- * Scrapes Twitter search results using Nitter instances
- * @param {Object} params - Search parameters
- * @param {string} params.query - Search query term
- * @param {number} params.limit - Maximum number of tweets to fetch (optional)
- * @param {string} params.type - Type of search ('tweets' or 'users')
- * @param {string} params.callback_url - URL to send results to (optional)
- * @returns {Promise<Object>} - Search results with metadata
+ * Extract user profile information
+ * @param {Object} page - Puppeteer page object
+ * @returns {Promise<Object>} - User profile data
  */
-async function searchTwitter(params) {
-  const { query, limit = 20, type = 'tweets', callback_url } = params;
+async function extractUserProfile(page) {
+  return await page.evaluate(() => {
+    try {
+      const profile = {};
+      
+      // Get avatar
+      const avatarElem = document.querySelector('.profile-card-avatar');
+      profile.avatar = avatarElem ? avatarElem.getAttribute('src') : null;
+      
+      // Get display name and username
+      const nameElem = document.querySelector('.profile-card-fullname');
+      const usernameElem = document.querySelector('.profile-card-username');
+      
+      profile.name = nameElem ? nameElem.textContent.trim() : null;
+      profile.username = usernameElem ? usernameElem.textContent.trim().replace('@', '') : null;
+      
+      // Check for verified status
+      profile.verified = !!nameElem?.querySelector('.verified-icon');
+      
+      // Get verification type if verified
+      if (profile.verified) {
+        const verifiedIcon = nameElem.querySelector('.verified-icon');
+        if (verifiedIcon.classList.contains('government')) {
+          profile.verifiedType = 'government';
+        } else if (verifiedIcon.classList.contains('business')) {
+          profile.verifiedType = 'business';
+        } else {
+          profile.verifiedType = 'standard';
+        }
+      }
+      
+      // Get bio
+      const bioElem = document.querySelector('.profile-bio');
+      profile.bio = bioElem ? bioElem.textContent.trim() : null;
+      
+      // Get location, website, and join date
+      const locationElem = document.querySelector('.profile-location');
+      const websiteElem = document.querySelector('.profile-website a');
+      const joinDateElem = document.querySelector('.profile-joindate');
+      
+      profile.location = locationElem ? locationElem.textContent.trim() : null;
+      profile.website = websiteElem ? websiteElem.getAttribute('href') : null;
+      
+      // Clean up join date
+      if (joinDateElem) {
+        const joinDateText = joinDateElem.textContent.trim();
+        profile.joinDate = joinDateText.replace('Joined', '').trim();
+      } else {
+        profile.joinDate = null;
+      }
+      
+      // Get following/followers/tweets counts
+      // Using more specific selectors to get the exact stat numbers
+      const followingElem = document.querySelector('.profile-statlist .following .profile-stat-num');
+      const followersElem = document.querySelector('.profile-statlist .followers .profile-stat-num');
+      const tweetsElem = document.querySelector('.profile-statlist .posts .profile-stat-num');
+      const likesElem = document.querySelector('.profile-statlist .likes .profile-stat-num');
+      
+      profile.following = followingElem ? followingElem.textContent.trim() : '0';
+      profile.followers = followersElem ? followersElem.textContent.trim() : '0';
+      profile.tweets = tweetsElem ? tweetsElem.textContent.trim() : '0';
+      profile.likes = likesElem ? likesElem.textContent.trim() : '0';
+      
+      // Get banner image if available
+      const bannerElem = document.querySelector('.profile-banner img');
+      profile.banner = bannerElem ? bannerElem.getAttribute('src') : null;
+      
+      // Get photo/media count if available
+      const photoRailHeader = document.querySelector('.photo-rail-header');
+      if (photoRailHeader) {
+        const photoCountText = photoRailHeader.textContent.trim();
+        const photoCountMatch = photoCountText.match(/(\d+,?\d*)/);
+        profile.mediaCount = photoCountMatch ? photoCountMatch[0] : '0';
+      } else {
+        profile.mediaCount = '0';
+      }
+      
+      return profile;
+    } catch (err) {
+      // Return partial profile if error occurs
+      return {
+        error: err.message,
+        partial: true
+      };
+    }
+  });
+}
+
+/**
+ * Scrapes user tweets from a Twitter profile using Nitter instances
+ * @param {Object} params - Scraping parameters
+ * @param {string} params.username - Twitter username to scrape (without @)
+ * @param {number} params.limit - Maximum number of tweets to fetch (optional)
+ * @param {string} params.callback_url - URL to send results to (optional)
+ * @returns {Promise<Object>} - User profile and tweets data
+ */
+async function getUserTweets(params) {
+  const { username, limit = 20, callback_url } = params;
   
-  if (!query) {
-    throw new Error('Search query is required');
+  if (!username) {
+    throw new Error('Username is required');
   }
   
   // Determine maximum attempts based on desired limit
@@ -352,23 +444,21 @@ async function searchTwitter(params) {
   const maxNitterAttempts = 6; // Number of Nitter instances
   let success = false;
   let tweets = [];
+  let profile = {};
   let currentError = null;
   let metadata = {};
-  
-  // Encode the search query properly for URL
-  const encodedQuery = encodeURIComponent(query);
   
   // Create timestamp for metadata
   const timestamp = Date.now();
   
   while (attempts < maxNitterAttempts && !success) {
     const nitterBaseUrl = getFallbackNitterUrl(attempts > 0);
-    const searchUrl = `${nitterBaseUrl}/search?f=${type}&q=${encodedQuery}`;
+    const profileUrl = `${nitterBaseUrl}/${username}`;
     
     try {
       // Launch browser with stealth mode and advanced options
       browser = await puppeteer.launch({
-        headless: "new", // 'new' for newer versions of Puppeteer
+        headless: "new",
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -415,13 +505,13 @@ async function searchTwitter(params) {
       await page.setDefaultNavigationTimeout(30000);
       
       // Navigate with a wait strategy that ensures the content is loaded
-      await page.goto(searchUrl, {
+      await page.goto(profileUrl, {
         waitUntil: ['domcontentloaded', 'networkidle2'],
       });
 
-      // Wait for tweets to load
-      await page.waitForSelector('.timeline-item, .error-panel', { timeout: 15000 })
-        .catch(() => { throw new Error('Content selector not found'); });
+      // Wait for profile and tweets to load
+      await page.waitForSelector('.profile-card, .error-panel', { timeout: 15000 })
+        .catch(() => { throw new Error('Profile selector not found'); });
       
       // Check if we hit an error page
       const errorElement = await page.$('.error-panel');
@@ -429,6 +519,13 @@ async function searchTwitter(params) {
         const errorText = await page.evaluate(el => el.textContent, errorElement);
         throw new Error(`Nitter error: ${errorText.trim()}`);
       }
+      
+      // Extract user profile information
+      profile = await extractUserProfile(page);
+      
+      // Wait for timeline items to appear
+      await page.waitForSelector('.timeline-item, .timeline-header, .error-panel', { timeout: 15000 })
+        .catch(() => { throw new Error('Timeline selector not found'); });
       
       // Load more tweets with pagination attempts, extracting incrementally
       const result = await loadMoreTweetsAndExtract(page, maxAttempts, limit);
@@ -440,33 +537,42 @@ async function searchTwitter(params) {
         tweets = tweets.slice(0, limit);
       }
       
-      if (tweets && tweets.length > 0) {
-        // Create metadata for search results
+      if (profile && tweets && tweets.length > 0) {
+        // Create metadata for user profile results
         metadata = {
-          query,
+          username,
           timestamp,
-          type,
           nitterInstance: nitterBaseUrl,
-          count: tweets.length,
+          tweetsCount: tweets.length,
           limit,
           totalFound: result.tweetCount,
           paginationAttempts: maxAttempts
         };
         
-        // Success! We have the data
-        success = true;
+        // Create structured result data
+        const resultData = {
+          metadata,
+          profile,
+          tweets
+        };
         
-        // If callback_url is provided directly to this function, send the results
+        // If callback_url is provided, send the results
         if (callback_url) {
           await axios.post(callback_url, {
             success: true,
-            type,
+            type: 'user_tweets',
             params,
-            result: { metadata, tweets }
+            result: resultData
+          }).catch((error) => {
+            // Log error but don't fail the scraping process
+            console.error(`Failed to send results to callback URL: ${error.message}`);
           });
         }
+        
+        // Success! We have the data
+        success = true;
       } else {
-        throw new Error('No valid tweets found in search results');
+        throw new Error('No valid profile or tweets found');
       }
       
     } catch (error) {
@@ -477,7 +583,7 @@ async function searchTwitter(params) {
       if (attempts >= maxNitterAttempts && callback_url) {
         await axios.post(callback_url, {
           success: false,
-          type,
+          type: 'user_tweets',
           params,
           error: {
             message: error.message,
@@ -498,7 +604,7 @@ async function searchTwitter(params) {
     throw new Error(`Failed to scrape after ${maxNitterAttempts} attempts. Last error: ${currentError?.message || 'Unknown error'}`);
   }
   
-  return { metadata, tweets };
+  return { metadata, profile, tweets };
 }
 
-module.exports = { searchTwitter };
+module.exports = { getUserTweets }; 

@@ -10,6 +10,7 @@ const { hideBin } = require('yargs/helpers');
 
 // Import scrapers
 const { searchTwitter } = require('./scrapers/twitter/tweet_search');
+const { getUserTweets } = require('./scrapers/twitter/user_tweets');
 // Will add more scrapers later as needed
 
 /**
@@ -43,7 +44,14 @@ async function processJob(clientPayload) {
         });
         break;
         
-      // Will add more types later (user_tweets, user_profile, etc.)
+      case 'user_tweets':
+        result = await getUserTweets({
+          ...params,
+          callback_url
+        });
+        break;
+      
+      // Will add more types later (user_profile, etc.)
       
       default:
         throw new Error(`Unknown job type: ${type}`);

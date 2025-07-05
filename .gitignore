@@ -35,4 +35,7 @@ Thumbs.db
 
 # Debug files
 /scraped_data/
+/scraped_data/*
 *.png 
+
+/*.json
