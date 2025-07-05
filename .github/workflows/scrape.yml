@@ -13,13 +13,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Cache Docker images
-        uses: actions/cache@v3
-        with:
-          path: /var/lib/docker
-          key: ${{ runner.os }}-docker-${{ hashFiles('.github/workflows/scrape.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-docker-
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
       - name: Cache node_modules
         uses: actions/cache@v3
@@ -28,6 +23,33 @@ jobs:
           key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-node-
+
+      # Cache Docker image using tar approach
+      - name: Cache Docker image
+        id: cache-docker-image
+        uses: actions/cache@v3
+        with:
+          path: /tmp/docker-image
+          key: ${{ runner.os }}-docker-image-puppeteer-20.9.0
+          restore-keys: |
+            ${{ runner.os }}-docker-image-puppeteer-20.9.0
+
+      # Load the Docker image if it was cached
+      - name: Load Docker image from cache
+        if: steps.cache-docker-image.outputs.cache-hit == 'true'
+        run: |
+          mkdir -p /tmp/docker-image
+          docker load < /tmp/docker-image/puppeteer-image.tar
+          echo "Docker image loaded from cache"
+
+      # Pull the image if not cached
+      - name: Pull Docker image if not cached
+        if: steps.cache-docker-image.outputs.cache-hit != 'true'
+        run: |
+          docker pull ghcr.io/puppeteer/puppeteer:20.9.0
+          mkdir -p /tmp/docker-image
+          docker save ghcr.io/puppeteer/puppeteer:20.9.0 > /tmp/docker-image/puppeteer-image.tar
+          echo "Docker image pulled and saved to cache"
 
       - name: Run in Docker container
         uses: addnab/docker-run-action@v3
