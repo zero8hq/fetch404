@@ -338,7 +338,7 @@ async function loadMoreTweetsAndExtract(page, maxAttempts = 10, desiredTweetCoun
  * @returns {Promise<Object>} - Search results with metadata
  */
 async function searchTwitter(params) {
-  const { query, limit = 20, type = 'tweets', callback_url } = params;
+  const { query, limit = 20, type = 'tweets', callback_url, indicator } = params;
   
   if (!query) {
     throw new Error('Search query is required');
@@ -479,6 +479,7 @@ async function searchTwitter(params) {
           success: false,
           type,
           params,
+          indicator,
           error: {
             message: error.message,
             stack: error.stack
