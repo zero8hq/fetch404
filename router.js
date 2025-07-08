@@ -19,7 +19,7 @@ const { getUserTweets } = require('./scrapers/twitter/user_tweets');
  * @returns {Promise<Object>} - Result of scraping operation
  */
 async function processJob(clientPayload) {
-  const { type, params, callback_url } = clientPayload;
+  const { type, params, callback_url, indicator } = clientPayload;
   let result;
 
   // Suppressed logs
@@ -32,7 +32,8 @@ async function processJob(clientPayload) {
         result = await searchTwitter({
           ...params,
           type: 'tweets',
-          callback_url
+          callback_url,
+          indicator
         });
         break;
       
@@ -40,14 +41,16 @@ async function processJob(clientPayload) {
         result = await searchTwitter({
           ...params,
           type: 'users',
-          callback_url
+          callback_url,
+          indicator
         });
         break;
         
       case 'user_tweets':
         result = await getUserTweets({
           ...params,
-          callback_url
+          callback_url,
+          indicator
         });
         break;
       

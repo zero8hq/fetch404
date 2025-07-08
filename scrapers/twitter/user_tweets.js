@@ -427,10 +427,11 @@ async function extractUserProfile(page) {
  * @param {string} params.username - Twitter username to scrape (without @)
  * @param {number} params.limit - Maximum number of tweets to fetch (optional)
  * @param {string} params.callback_url - URL to send results to (optional)
+ * @param {string} params.indicator - Indicator to be included in callback (optional)
  * @returns {Promise<Object>} - User profile and tweets data
  */
 async function getUserTweets(params) {
-  const { username, limit = 20, callback_url } = params;
+  const { username, limit = 20, callback_url, indicator } = params;
   
   if (!username) {
     throw new Error('Username is required');
@@ -561,6 +562,7 @@ async function getUserTweets(params) {
           await axios.post(callback_url, {
             success: true,
             type: 'user_tweets',
+            indicator, // Include the indicator in the callback payload
             params,
             result: resultData
           }).catch((error) => {
@@ -584,6 +586,7 @@ async function getUserTweets(params) {
         await axios.post(callback_url, {
           success: false,
           type: 'user_tweets',
+          indicator, // Include the indicator in the callback payload
           params,
           error: {
             message: error.message,

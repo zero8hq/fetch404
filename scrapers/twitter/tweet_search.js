@@ -335,10 +335,11 @@ async function loadMoreTweetsAndExtract(page, maxAttempts = 10, desiredTweetCoun
  * @param {number} params.limit - Maximum number of tweets to fetch (optional)
  * @param {string} params.type - Type of search ('tweets' or 'users')
  * @param {string} params.callback_url - URL to send results to (optional)
+ * @param {string} params.indicator - Indicator to be included in callback (optional)
  * @returns {Promise<Object>} - Search results with metadata
  */
 async function searchTwitter(params) {
-  const { query, limit = 20, type = 'tweets', callback_url } = params;
+  const { query, limit = 20, type = 'tweets', callback_url, indicator } = params;
   
   if (!query) {
     throw new Error('Search query is required');
@@ -461,6 +462,7 @@ async function searchTwitter(params) {
           await axios.post(callback_url, {
             success: true,
             type,
+            indicator, // Include the indicator in the callback payload
             params,
             result: { metadata, tweets }
           });
@@ -478,6 +480,7 @@ async function searchTwitter(params) {
         await axios.post(callback_url, {
           success: false,
           type,
+          indicator, // Include the indicator in the callback payload
           params,
           error: {
             message: error.message,
